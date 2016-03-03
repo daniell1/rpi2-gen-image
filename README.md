@@ -5,6 +5,12 @@
 ## Goal of this fork
 This is only a proof of concept. The goal is to get a fully maintained OS on the Raspberry Pi 2. The idea of this image is installing the kernel, boot binaries and U-Boot from Raspian and everything else from Debian.
 
+## Important
+Please note that this script generates an image that uses Debian and Raspbian Software Repositories. Mixing these isn't supported by Debian, nor Raspbian, nor me and you might end up in having an unstable system. I've created this to learn more about Debian, Raspbian, apt and git. Please don't blame me for any trouble :)
+
+## What's different?
+The script uses the kernel and boot binaries from Raspbian (U-Boot's still a to-do). After updating the kernel or the boot binaries you need to copy them from /boot to /boot/firmware. This can be done via rpi-update which is an added script.
+
 ## Build dependencies
 The following list of Debian packages must be installed on the build system because they are essentially required for the bootstrapping process. The script will check if all required packages are installed and missing packages will be installed automatically if confirmed by the user.
 
