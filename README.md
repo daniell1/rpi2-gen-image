@@ -1,6 +1,9 @@
-# rpi2-gen-image
+# rpi2-gen-image fork
 ## Introduction
 `rpi2-gen-image.sh` is an advanced Debian Linux bootstrapping shell script for generating Debian OS images for the Raspberry 2 (RPi2) computer. The script at this time only supports the bootstrapping of the current stable Debian 8 "jessie" release.
+
+## Goal of this fork
+This is only a proof of concept. The goal is to get a fully maintained OS on the Raspberry Pi 2. The idea of this image is installing the kernel, boot binaries and U-Boot from Raspian and everything else from Debian.
 
 ## Build dependencies
 The following list of Debian packages must be installed on the build system because they are essentially required for the bootstrapping process. The script will check if all required packages are installed and missing packages will be installed automatically if confirmed by the user.

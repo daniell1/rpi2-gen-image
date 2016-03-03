@@ -55,10 +55,10 @@ APT_PROXY=${APT_PROXY:=""}
 APT_SERVER=${APT_SERVER:="ftp.debian.org"}
 
 # Feature settings
-ENABLE_CONSOLE=${ENABLE_CONSOLE:=true}
+ENABLE_CONSOLE=${ENABLE_CONSOLE:=false}
 ENABLE_IPV6=${ENABLE_IPV6:=true}
 ENABLE_SSHD=${ENABLE_SSHD:=true}
-ENABLE_SOUND=${ENABLE_SOUND:=true}
+ENABLE_SOUND=${ENABLE_SOUND:=false}
 ENABLE_DBUS=${ENABLE_DBUS:=true}
 ENABLE_HWRANDOM=${ENABLE_HWRANDOM:=true}
 ENABLE_MINGPU=${ENABLE_MINGPU:=false}
@@ -66,11 +66,11 @@ ENABLE_XORG=${ENABLE_XORG:=false}
 ENABLE_WM=${ENABLE_WM:=""}
 
 # Advanced settings
-ENABLE_MINBASE=${ENABLE_MINBASE:=false}
+ENABLE_MINBASE=${ENABLE_MINBASE:=true}
 ENABLE_UBOOT=${ENABLE_UBOOT:=false}
 ENABLE_FBTURBO=${ENABLE_FBTURBO:=false}
 ENABLE_HARDNET=${ENABLE_HARDNET:=false}
-ENABLE_IPTABLES=${ENABLE_IPTABLES:=false}
+ENABLE_IPTABLES=${ENABLE_IPTABLES:=true}
 
 # Image chroot path
 R=${BUILDDIR}/chroot
@@ -206,21 +206,61 @@ if [ -z "$APT_PROXY" ] ; then
   echo "Acquire::http::Proxy \"$APT_PROXY\"" >> $R/etc/apt/apt.conf.d/10proxy
 fi
 
-# Pin package flash-kernel to repositories.collabora.co.uk
+# Pin package kernel-imagel to archive.raspbian.org
+cat <<EOM >$R/etc/apt/preferences.d/linux-image-rpi2-rpfv
+Package: linux-image-rpi2-rpfv
+Pin: origin "archive.raspbian.org"
+Pin-Priority: 1000
+EOM
+
+# Pin package flash-kernel to archive.raspbian.org
 cat <<EOM >$R/etc/apt/preferences.d/flash-kernel
 Package: flash-kernel
-Pin: origin repositories.collabora.co.uk
+Pin: origin "archive.raspbian.org"
 Pin-Priority: 1000
+EOM
+
+# Pin package raspberrypi-bootloader-nokernel to archive.raspbian.org
+cat <<EOM >$R/etc/apt/preferences.d/raspberrypi-bootloader-nokernel
+Package: raspberrypi-bootloader-nokernel
+Pin: origin "archive.raspbian.org"
+Pin-Priority: 1000
+EOM
+
+# Pin packages u-boot and u-boot-tools to archive.raspbian.org
+cat <<EOM >$R/etc/apt/preferences.d/u-bootNtools
+Package: u-boot
+Pin: origin "archive.raspbian.org"
+Pin-Priority: 1000
+
+Package: u-boot-tools
+Pin: origin "archive.raspbian.org"
+Pin-Priority: 1000
+EOM
+
+# Pin package kernel-imagel to archive.raspbian.org
+cat <<EOM >$R/etc/apt/preferences.d/linux-image-rpi2-rpfv
+Package: linux-image-rpi2-rpfv
+Pin: origin "archive.raspbian.org"
+Pin-Priority: 1000
+EOM
+
+# Not automatically retrieve any other packages from archive.raspbian.org
+# See apt_preferences for which packages will be applied if they are pinned: http://manpages.debian.org/cgi-bin/man.cgi?query=apt_preferences&apropos=0&sektion=5&manpath=Debian+8+jessie&format=html&locale=en
+cat <<EOM >$R/etc/apt/preferences.d/raspbian
+Package: *
+Pin: origin "archive.raspbian.org"
+Pin-Priority: 1
 EOM
 
 # Set up timezone
 echo ${TIMEZONE} >$R/etc/timezone
 LANG=C chroot $R dpkg-reconfigure -f noninteractive tzdata
 
-# Upgrade collabora package index and install collabora keyring
-echo "deb https://repositories.collabora.co.uk/debian ${RELEASE} rpi2" >$R/etc/apt/sources.list
+# Upgrade raspbian package index and install raspbian keyring
+echo "deb http://archive.raspbian.org/raspbian ${RELEASE} main contrib non-free" >$R/etc/apt/sources.list
 LANG=C chroot $R apt-get -qq -y update
-LANG=C chroot $R apt-get -qq -y --force-yes install collabora-obs-archive-keyring
+LANG=C chroot $R apt-get -qq -y --force-yes install raspbian-archive-keyring
 
 # Set up initial sources.list
 cat <<EOM >$R/etc/apt/sources.list
@@ -233,7 +273,8 @@ deb http://${APT_SERVER}/debian/ ${RELEASE}-updates main contrib
 deb http://security.debian.org/ ${RELEASE}/updates main contrib
 #deb-src http://security.debian.org/ ${RELEASE}/updates main contrib
 
-deb https://repositories.collabora.co.uk/debian ${RELEASE} rpi2
+deb http://archive.raspbian.org/raspbian ${RELEASE} main contrib non-free firmware rpi
+#deb-src http://archive.raspbian.org/raspbian ${RELEASE} main contrib non-free firmware rpi
 EOM
 
 # Upgrade package index and update all installed packages and changed dependencies
@@ -285,22 +326,44 @@ fi
 
 # Kernel installation
 # Install flash-kernel last so it doesn't try (and fail) to detect the platform in the chroot
-LANG=C chroot $R apt-get -qq -y --no-install-recommends install linux-image-3.18.0-trunk-rpi2
+LANG=C chroot $R apt-get -qq -y install linux-image-rpi2-rpfv # This metapackage will pull in the raspbian kernel for the raspberry pi 2
 LANG=C chroot $R apt-get -qq -y install flash-kernel
 
 VMLINUZ="$(ls -1 $R/boot/vmlinuz-* | sort | tail -n 1)"
 [ -z "$VMLINUZ" ] && exit 1
 mkdir -p $R/boot/firmware
 
-# required boot binaries from raspberry/firmware github (commit: "kernel: Bump to 3.18.10")
-wget -q -O $R/boot/firmware/bootcode.bin https://github.com/raspberrypi/firmware/raw/cd355a9dd4f1f4de2e79b0c8e102840885cdf1de/boot/bootcode.bin
-wget -q -O $R/boot/firmware/fixup_cd.dat https://github.com/raspberrypi/firmware/raw/cd355a9dd4f1f4de2e79b0c8e102840885cdf1de/boot/fixup_cd.dat
-wget -q -O $R/boot/firmware/fixup.dat https://github.com/raspberrypi/firmware/raw/cd355a9dd4f1f4de2e79b0c8e102840885cdf1de/boot/fixup.dat
-wget -q -O $R/boot/firmware/fixup_x.dat https://github.com/raspberrypi/firmware/raw/cd355a9dd4f1f4de2e79b0c8e102840885cdf1de/boot/fixup_x.dat
-wget -q -O $R/boot/firmware/start_cd.elf https://github.com/raspberrypi/firmware/raw/cd355a9dd4f1f4de2e79b0c8e102840885cdf1de/boot/start_cd.elf
-wget -q -O $R/boot/firmware/start.elf https://github.com/raspberrypi/firmware/raw/cd355a9dd4f1f4de2e79b0c8e102840885cdf1de/boot/start.elf
-wget -q -O $R/boot/firmware/start_x.elf https://github.com/raspberrypi/firmware/raw/cd355a9dd4f1f4de2e79b0c8e102840885cdf1de/boot/start_x.elf
+# required boot binaries from raspbian
+LANG=C chroot $R apt-get -qq -y install raspberrypi-bootloader-nokernel
+cp $R/boot/bootcode.bin $R/boot/firmware/bootcode.bin
+cp $R/boot/fixup_cd.dat $R/boot/firmware/fixup_cd.dat
+cp $R/boot/fixup.dat $R/boot/firmware/fixup.dat
+cp $R/boot/fixup_x.dat $R/boot/firmware/fixup_x.dat
+cp $R/boot/start_cd.elf $R/boot/firmware/start_cd.elf
+cp $R/boot/start.elf $R/boot/firmware/start.elf
+cp $R/boot/start_x.elf $R/boot/firmware/start_x.elf
 cp $VMLINUZ $R/boot/firmware/kernel7.img
+
+### To-do: needs improvement; haven't worked out yet how the do it in raspbian
+# rsync new kernel and firmware from /boot to /boot/firmware; this is required in order to add upgraded files from /boot to /boot/firmware
+LANG=C chroot $R apt-get -qq -y install rsync
+cat <<EOM >$R/etc/cron.daily/rsyncBootToBootFirmware
+#!/bin/sh
+
+rsync $R/boot/bootcode.bin $R/boot/firmware/bootcode.bin
+rsync $R/boot/fixup_cd.dat $R/boot/firmware/fixup_cd.dat
+rsync $R/boot/fixup.dat $R/boot/firmware/fixup.dat
+rsync $R/boot/fixup_x.dat $R/boot/firmware/fixup_x.dat
+rsync $R/boot/start_cd.elf $R/boot/firmware/start_cd.elf
+rsync $R/boot/start.elf $R/boot/firmware/start.elf
+rsync $R/boot/start_x.elf $R/boot/firmware/start_x.elf
+
+VMLINUZ="$(ls -1 /boot/vmlinuz-* | sort | tail -n 1)"
+[ -z "$VMLINUZ" ] && exit 1
+rsync $VMLINUZ /boot/firmware/kernel7.img
+EOM
+chmod 755 $R/etc/cron.daily/rsyncBootToBootFirmware
+ln -T $R/etc/cron.daily/rsyncBootToBootFirmware $R/bin/rpi-update # This lets you run the copying manually after kernel and/or firmware update
 
 # Set up IPv4 hosts
 echo ${HOSTNAME} >$R/etc/hostname
@@ -744,6 +807,7 @@ if [ "$ENABLE_UBOOT" = true ] || [ "$ENABLE_FBTURBO" = true ]; then
   LANG=C chroot $R apt-get install -q -y --force-yes --no-install-recommends linux-compiler-gcc-4.9-arm g++ make bc
 fi
 
+### To-do: change U-Boot to raspbian maintained
 # Fetch and build U-Boot bootloader
 if [ "$ENABLE_UBOOT" = true ] ; then
   # Fetch U-Boot bootloader sources
@@ -778,6 +842,7 @@ EOM
   LANG=C chroot $R mkimage -A arm -O linux -T script -C none -a 0x00000000 -e 0x00000000 -n "RPi2 Boot Script" -d /boot/firmware/uboot.mkimage /boot/firmware/boot.scr
 fi
 
+### To-do: remove and check if it is possible to use raspbian maintained stuff
 # Fetch and build fbturbo Xorg driver
 if [ "$ENABLE_FBTURBO" = true ] ; then
   # Fetch fbturbo driver sources
