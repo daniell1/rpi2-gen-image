@@ -36,6 +36,9 @@ Set Debian packages server address. Choose a server from the list of Debian worl
 ##### `APT_PROXY`=""
 Set Proxy server address. Using a local Proxy-Cache like `apt-cacher-ng` will speed-up the bootstrapping process because all required Debian packages will only be downloaded from the Debian mirror site once.
 
+##### `APT_INCLUDES`=""
+A comma seperated list of additional packages to be installed during bootstrapping.
+
 #### General system settings:
 ##### `HOSTNAME`="rpi2-jessie"
 Set system host name. It's recommended that the host name is unique in the corresponding subnet.
@@ -46,16 +49,56 @@ Set system `root` password. The same password is used for the created user `pi`.
 ##### `DEFLOCAL`="en_US.UTF-8"
 Set default system locale. This setting can also be changed inside the running OS using the `dpkg-reconfigure locales` command. The script variant `minbase` (ENABLE_MINBASE=true) doesn't install `locales`.
 
-
 ##### `TIMEZONE`="Europe/Berlin"
 Set default system timezone. All available timezones can be found in the `/usr/share/zoneinfo/` directory. This setting can also be changed inside the running OS using the `dpkg-reconfigure tzdata` command.
 
+##### `EXPANDROOT`=true
+Expand the root partition and filesystem automatically on first boot.
+
 #### Keyboard settings:
 These options are used to configure keyboard layout in `/etc/default/keyboard` for console and Xorg. These settings can also be changed inside the running OS using the `dpkg-reconfigure keyboard-configuration` command.
+
 ##### `XKBMODEL`=""
+Set the name of the model of your keyboard type.
+
 ##### `XKBLAYOUT`=""
+Set the supported keyboard layout(s).
+
 ##### `XKBVARIANT`=""
+Set the supported variant(s) of the keyboard layout(s).
+
 ##### `XKBOPTIONS`=""
+Set extra xkb configuration options.
+
+#### Networking settings (DHCP)
+This setting is used to set up networking auto configuration in `/etc/systemd/network/eth.network`.
+
+#####`ENABLE_DHCP`=true
+Set the system to use DHCP. This requires an DHCP server.
+
+#### Networking settings (static)
+These settings are used to set up a static networking configuration in /etc/systemd/network/eth.network. The following static networking settings are only supported if `ENABLE_DHCP` was set to `false`.
+
+#####`NET_ADDRESS`=""
+Set a static IPv4 or IPv6 address and its prefix, separated by "/", eg. "192.169.0.3/24".
+
+#####`NET_GATEWAY`=""
+Set the IP address for the default gateway.
+
+#####`NET_DNS_1`=""
+Set the IP address for the first DNS server.
+
+#####`NET_DNS_2`=""
+Set the IP address for the second DNS server.
+
+#####`NET_DNS_DOMAINS`=""
+Set the default DNS search domains to use for non fully qualified host names.
+
+#####`NET_NTP_1`=""
+Set the IP address for the first NTP server.
+
+#####`NET_NTP_2`=""
+Set the IP address for the second NTP server.
 
 #### Basic system features:
 ##### `ENABLE_CONSOLE`=true
@@ -66,6 +109,10 @@ Enable IPv6 support. The network interface configuration is managed via systemd-
 
 ##### `ENABLE_SSHD`=true
 Install and enable OpenSSH service. The default configuration of the service doesn't allow `root` to login. Please use the user `pi` instead and `su -` or `sudo` to execute commands as root.
+
+##### `ENABLE_RSYSLOG`=true
+If set to false, disable and uninstall rsyslog (so logs will be available only
+in journal files)
 
 ##### `ENABLE_SOUND`=true
 Enable sound hardware and install Advanced Linux Sound Architecture.
@@ -98,8 +145,21 @@ Install and enable the hardware accelerated Xorg video driver `fbturbo`. Please 
 ##### `ENABLE_IPTABLES`=false
 Enable iptables IPv4/IPv6 firewall. Simplified ruleset: Allow all outgoing connections. Block all incoming connections except to OpenSSH service.
 
+##### `ENABLE_USER`=true
+Create pi user with password raspberry
+
+##### `ENABLE_ROOT`=true
+Set root user password so root login will be enabled
+
+##### `ENABLE_ROOT_SSH`=true
+Enable password root login via SSH. May be a security risk with default
+password, use only in trusted environments.
+
 ##### `ENABLE_HARDNET`=false
 Enable IPv4/IPv6 network stack hardening settings.
+
+##### `CHROOT_SCRIPTS`=""
+Path to a directory with scripts that should be run in the chroot before the image is finally built. Every executable file in this direcory is run in lexicographical order.
 
 ## Logging of the bootstrapping process
 All information related to the bootstrapping process and the commands executed by the `rpi2-gen-image.sh` script can easily be saved into a logfile. The common shell command `script` can be used for this purpose:

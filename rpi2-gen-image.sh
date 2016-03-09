@@ -30,6 +30,11 @@ cleanup (){
   trap - 0 1 2 3 6
 }
 
+# Exec command in chroot
+chroot_exec() {
+  LANG=C LC_ALL=C chroot $R $*
+}
+
 set -e
 set -x
 
@@ -49,6 +54,19 @@ XKBMODEL=${XKBMODEL:=""}
 XKBLAYOUT=${XKBLAYOUT:=""}
 XKBVARIANT=${XKBVARIANT:=""}
 XKBOPTIONS=${XKBOPTIONS:=""}
+EXPANDROOT=${EXPANDROOT:=true}
+
+# Network settings
+ENABLE_DHCP=${ENABLE_DHCP:=true}
+# NET_* settings are ignored when ENABLE_DHCP=true
+# NET_ADDRESS is an IPv4 or IPv6 address and its prefix, separated by "/"
+NET_ADDRESS=${NET_ADDRESS:=""}
+NET_GATEWAY=${NET_GATEWAY:=""}
+NET_DNS_1=${NET_DNS_1:=""}
+NET_DNS_2=${NET_DNS_2:=""}
+NET_DNS_DOMAINS=${NET_DNS_DOMAINS:=""}
+NET_NTP_1=${NET_NTP_1:=""}
+NET_NTP_2=${NET_NTP_2:=""}
 
 # APT settings
 APT_PROXY=${APT_PROXY:=""}
@@ -64,6 +82,10 @@ ENABLE_HWRANDOM=${ENABLE_HWRANDOM:=true}
 ENABLE_MINGPU=${ENABLE_MINGPU:=false}
 ENABLE_XORG=${ENABLE_XORG:=false}
 ENABLE_WM=${ENABLE_WM:=""}
+ENABLE_RSYSLOG=${ENABLE_RSYSLOG:=true}
+ENABLE_USER=${ENABLE_USER:=true}
+ENABLE_ROOT=${ENABLE_ROOT:=false}
+ENABLE_ROOT_SSH=${ENABLE_ROOT_SSH:=false}
 
 # Advanced settings
 ENABLE_MINBASE=${ENABLE_MINBASE:=true}
@@ -74,6 +96,7 @@ ENABLE_IPTABLES=${ENABLE_IPTABLES:=true}
 
 # Image chroot path
 R=${BUILDDIR}/chroot
+CHROOT_SCRIPTS=${CHROOT_SCRIPTS:=""}
 
 # Packages required for bootstrapping
 REQUIRED_PACKAGES="debootstrap debian-archive-keyring qemu-user-static binfmt-support dosfstools rsync bmap-tools whois git-core"
@@ -82,7 +105,8 @@ REQUIRED_PACKAGES="debootstrap debian-archive-keyring qemu-user-static binfmt-su
 MISSING_PACKAGES=""
 
 # Packages required in the chroot build environment
-APT_INCLUDES="apt-transport-https,ca-certificates,debian-archive-keyring,dialog,sudo"
+APT_INCLUDES=${APT_INCLUDES:=""}
+APT_INCLUDES="${APT_INCLUDES},apt-transport-https,ca-certificates,debian-archive-keyring,dialog,sudo"
 
 set +x
 
@@ -135,6 +159,11 @@ else
   APT_INCLUDES="${APT_INCLUDES},locales,keyboard-configuration,console-setup"
 fi
 
+# Add parted package, required to get partprobe utility
+if [ "$EXPANDROOT" = true ] ; then
+  APT_INCLUDES="${APT_INCLUDES},parted"
+fi
+
 # Add dbus package, recommended if using systemd
 if [ "$ENABLE_DBUS" = true ] ; then
   APT_INCLUDES="${APT_INCLUDES},dbus"
@@ -158,6 +187,10 @@ fi
 # Add rng-tools package
 if [ "$ENABLE_HWRANDOM" = true ] ; then
   APT_INCLUDES="${APT_INCLUDES},rng-tools"
+fi
+
+if [ "$ENABLE_USER" = true ]; then
+  APT_INCLUDES="${APT_INCLUDES},sudo"
 fi
 
 # Add fbturbo video driver
@@ -255,12 +288,12 @@ EOM
 
 # Set up timezone
 echo ${TIMEZONE} >$R/etc/timezone
-LANG=C chroot $R dpkg-reconfigure -f noninteractive tzdata
+chroot_exec dpkg-reconfigure -f noninteractive tzdata
 
 # Upgrade raspbian package index and install raspbian keyring
 echo "deb http://archive.raspbian.org/raspbian ${RELEASE} main contrib non-free" >$R/etc/apt/sources.list
-LANG=C chroot $R apt-get -qq -y update
-LANG=C chroot $R apt-get -qq -y --force-yes install raspbian-archive-keyring
+chroot_exec apt-get -qq -y update
+chroot_exec apt-get -qq -y --force-yes install raspbian-archive-keyring
 
 # Set up initial sources.list
 cat <<EOM >$R/etc/apt/sources.list
@@ -278,8 +311,8 @@ deb http://archive.raspbian.org/raspbian ${RELEASE} main contrib non-free firmwa
 EOM
 
 # Upgrade package index and update all installed packages and changed dependencies
-LANG=C chroot $R apt-get -qq -y update
-LANG=C chroot $R apt-get -qq -y -u dist-upgrade
+chroot_exec apt-get -qq -y update
+chroot_exec apt-get -qq -y -u dist-upgrade
 
 # Set up default locale and keyboard configuration
 if [ "$ENABLE_MINBASE" = false ] ; then
@@ -287,54 +320,54 @@ if [ "$ENABLE_MINBASE" = false ] ; then
   # https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=684134 https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=685957
   # ... so we have to set locales manually
   if [ "$DEFLOCAL" = "en_US.UTF-8" ] ; then
-    LANG=C chroot $R echo "locales locales/locales_to_be_generated multiselect ${DEFLOCAL} UTF-8" | debconf-set-selections
+    chroot_exec echo "locales locales/locales_to_be_generated multiselect ${DEFLOCAL} UTF-8" | debconf-set-selections
   else
     # en_US.UTF-8 should be available anyway : https://www.debian.org/doc/manuals/debian-reference/ch08.en.html#_the_reconfiguration_of_the_locale
-    LANG=C chroot $R echo "locales locales/locales_to_be_generated multiselect en_US.UTF-8 UTF-8, ${DEFLOCAL} UTF-8" | debconf-set-selections
-    LANG=C chroot $R sed -i "/en_US.UTF-8/s/^#//" /etc/locale.gen
+    chroot_exec echo "locales locales/locales_to_be_generated multiselect en_US.UTF-8 UTF-8, ${DEFLOCAL} UTF-8" | debconf-set-selections
+    chroot_exec sed -i "/en_US.UTF-8/s/^#//" /etc/locale.gen
   fi
-  LANG=C chroot $R sed -i "/${DEFLOCAL}/s/^#//" /etc/locale.gen
-  LANG=C chroot $R echo "locales locales/default_environment_locale select ${DEFLOCAL}" | debconf-set-selections
-  LANG=C chroot $R locale-gen
-  LANG=C chroot $R update-locale LANG=${DEFLOCAL}
+  chroot_exec sed -i "/${DEFLOCAL}/s/^#//" /etc/locale.gen
+  chroot_exec echo "locales locales/default_environment_locale select ${DEFLOCAL}" | debconf-set-selections
+  chroot_exec locale-gen
+  chroot_exec update-locale LANG=${DEFLOCAL}
 
   # Keyboard configuration, if requested
   if [ "$XKBMODEL" != "" ] ; then
-    LANG=C chroot $R sed -i "s/^XKBMODEL.*/XKBMODEL=\"${XKBMODEL}\"/" /etc/default/keyboard
+    chroot_exec sed -i "s/^XKBMODEL.*/XKBMODEL=\"${XKBMODEL}\"/" /etc/default/keyboard
   fi
   if [ "$XKBLAYOUT" != "" ] ; then
-    LANG=C chroot $R sed -i "s/^XKBLAYOUT.*/XKBLAYOUT=\"${XKBLAYOUT}\"/" /etc/default/keyboard
+    chroot_exec sed -i "s/^XKBLAYOUT.*/XKBLAYOUT=\"${XKBLAYOUT}\"/" /etc/default/keyboard
   fi
   if [ "$XKBVARIANT" != "" ] ; then
-    LANG=C chroot $R sed -i "s/^XKBVARIANT.*/XKBVARIANT=\"${XKBVARIANT}\"/" /etc/default/keyboard
+    chroot_exec sed -i "s/^XKBVARIANT.*/XKBVARIANT=\"${XKBVARIANT}\"/" /etc/default/keyboard
   fi
   if [ "$XKBOPTIONS" != "" ] ; then
-    LANG=C chroot $R sed -i "s/^XKBOPTIONS.*/XKBOPTIONS=\"${XKBOPTIONS}\"/" /etc/default/keyboard
+    chroot_exec sed -i "s/^XKBOPTIONS.*/XKBOPTIONS=\"${XKBOPTIONS}\"/" /etc/default/keyboard
   fi
-  LANG=C chroot $R dpkg-reconfigure -f noninteractive keyboard-configuration
+  chroot_exec dpkg-reconfigure -f noninteractive keyboard-configuration
   # Set up font console
   case "${DEFLOCAL}" in
     *UTF-8)
-      LANG=C chroot $R sed -i 's/^CHARMAP.*/CHARMAP="UTF-8"/' /etc/default/console-setup
+      chroot_exec sed -i 's/^CHARMAP.*/CHARMAP="UTF-8"/' /etc/default/console-setup
       ;;
     *)
-      LANG=C chroot $R sed -i 's/^CHARMAP.*/CHARMAP="guess"/' /etc/default/console-setup
+      chroot_exec sed -i 's/^CHARMAP.*/CHARMAP="guess"/' /etc/default/console-setup
       ;;
   esac
-  LANG=C chroot $R dpkg-reconfigure -f noninteractive console-setup
+  chroot_exec dpkg-reconfigure -f noninteractive console-setup
 fi
 
 # Kernel installation
 # Install flash-kernel last so it doesn't try (and fail) to detect the platform in the chroot
-LANG=C chroot $R apt-get -qq -y install linux-image-rpi2-rpfv # This metapackage will pull in the raspbian kernel for the raspberry pi 2
-LANG=C chroot $R apt-get -qq -y install flash-kernel
+chroot_exec apt-get -qq -y install linux-image-rpi2-rpfv # This metapackage will pull in the raspbian kernel for the raspberry pi 2
+chroot_exec apt-get -qq -y install flash-kernel
 
 VMLINUZ="$(ls -1 $R/boot/vmlinuz-* | sort | tail -n 1)"
 [ -z "$VMLINUZ" ] && exit 1
 mkdir -p $R/boot/firmware
 
 # required boot binaries from raspbian
-LANG=C chroot $R apt-get -qq -y install raspberrypi-bootloader-nokernel
+chroot_exec apt-get -qq -y install raspberrypi-bootloader-nokernel
 cp $R/boot/bootcode.bin $R/boot/firmware/bootcode.bin
 cp $R/boot/fixup_cd.dat $R/boot/firmware/fixup_cd.dat
 cp $R/boot/fixup.dat $R/boot/firmware/fixup.dat
@@ -346,7 +379,7 @@ cp $VMLINUZ $R/boot/firmware/kernel7.img
 
 ### To-do: needs improvement; haven't worked out yet how the do it in raspbian
 # rsync new kernel and firmware from /boot to /boot/firmware; this is required in order to add upgraded files from /boot to /boot/firmware
-LANG=C chroot $R apt-get -qq -y install rsync
+chroot_exec apt-get -qq -y install rsync
 cat <<EOM >$R/etc/cron.daily/rsyncBootToBootFirmware
 #!/bin/sh
 
@@ -371,6 +404,10 @@ cat <<EOM >$R/etc/hosts
 127.0.0.1       localhost
 127.0.1.1       ${HOSTNAME}
 EOM
+if [ "$NET_ADDRESS" != "" ] ; then
+NET_IP=$(echo ${NET_ADDRESS} | cut -f 1 -d'/')
+sed -i "s/^127.0.1.1/${NET_IP}/" $R/etc/hosts
+fi
 
 # Set up IPv6 hosts
 if [ "$ENABLE_IPV6" = true ] ; then
@@ -388,6 +425,7 @@ cat <<EOM >$R/etc/network/interfaces
 # please configure your networks in '/etc/systemd/network/'
 EOM
 
+if [ "$ENABLE_DHCP" = true ] ; then
 # Enable systemd-networkd DHCP configuration for interface eth0
 cat <<EOM >$R/etc/systemd/network/eth.network
 [Match]
@@ -399,21 +437,47 @@ EOM
 
 # Set DHCP configuration to IPv4 only
 if [ "$ENABLE_IPV6" = false ] ; then
-  sed -i "s/=yes/=v4/" $R/etc/systemd/network/eth.network
+  sed -i "s/^DHCP=yes/DHCP=v4/" $R/etc/systemd/network/eth.network
+fi
+else # ENABLE_DHCP=false
+cat <<EOM >$R/etc/systemd/network/eth.network
+[Match]
+Name=eth0
+
+[Network]
+DHCP=no
+Address=${NET_ADDRESS}
+Gateway=${NET_GATEWAY}
+DNS=${NET_DNS_1}
+DNS=${NET_DNS_2}
+Domains=${NET_DNS_DOMAINS}
+NTP=${NET_NTP_1}
+NTP=${NET_NTP_2}
+EOM
 fi
 
 # Enable systemd-networkd service
-LANG=C chroot $R systemctl enable systemd-networkd
+chroot_exec systemctl enable systemd-networkd
 
 # Generate crypt(3) password string
 ENCRYPTED_PASSWORD=`mkpasswd -m sha-512 ${PASSWORD}`
 
 # Set up default user
-LANG=C chroot $R adduser --gecos "Raspberry PI user" --add_extra_groups --disabled-password pi
-LANG=C chroot $R usermod -a -G sudo -p "${ENCRYPTED_PASSWORD}" pi
+if [ "$ENABLE_USER" = true ] ; then
+  chroot_exec adduser --gecos pi --add_extra_groups --disabled-password pi
+  chroot_exec usermod -a -G sudo -p "${ENCRYPTED_PASSWORD}" pi
+fi
 
-# Set up root password
-LANG=C chroot $R usermod -p "${ENCRYPTED_PASSWORD}" root
+# Set up root password or not
+if [ "$ENABLE_ROOT" = true ]; then
+  chroot_exec usermod -p "${ENCRYPTED_PASSWORD}" root
+
+  if [ "$ENABLE_ROOT_SSH" = true ]; then
+    sed -i 's|[#]*PermitRootLogin.*|PermitRootLogin yes|g' $R/etc/ssh/sshd_config
+  fi
+else
+  chroot_exec usermod -p \'!\' root
+fi
 
 # Set up firmware boot cmdline
 CMDLINE="dwc_otg.lpm_enable=0 root=/dev/mmcblk0p2 rootfstype=ext4 rootflags=commit=100,data=writeback elevator=deadline rootwait net.ifnames=1 console=tty1"
@@ -431,51 +495,7 @@ fi
 echo "${CMDLINE}" >$R/boot/firmware/cmdline.txt
 
 # Set up firmware config
-cat <<EOM >$R/boot/firmware/config.txt
-# For more options and information see
-# http://www.raspberrypi.org/documentation/configuration/config-txt.md
-# Some settings may impact device functionality. See link above for details
-
-# uncomment if you get no picture on HDMI for a default "safe" mode
-#hdmi_safe=1
-
-# uncomment this if your display has a black border of unused pixels visible
-# and your display can output without overscan
-#disable_overscan=1
-
-# uncomment the following to adjust overscan. Use positive numbers if console
-# goes off screen, and negative if there is too much border
-#overscan_left=16
-#overscan_right=16
-#overscan_top=16
-#overscan_bottom=16
-
-# uncomment to force a console size. By default it will be display's size minus
-# overscan.
-#framebuffer_width=1280
-#framebuffer_height=720
-
-# uncomment if hdmi display is not detected and composite is being output
-#hdmi_force_hotplug=1
-
-# uncomment to force a specific HDMI mode (this will force VGA)
-#hdmi_group=1
-#hdmi_mode=1
-
-# uncomment to force a HDMI mode rather than DVI. This can make audio work in
-# DMT (computer monitor) modes
-#hdmi_drive=2
-
-# uncomment to increase signal to HDMI, if you have interference, blanking, or
-# no display
-#config_hdmi_boost=4
-
-# uncomment for composite PAL
-#sdtv_mode=2
-
-# uncomment to overclock the arm. 700 MHz is the default.
-#arm_freq=800
-EOM
+install -o root -g root -m 644 files/config.txt $R/boot/firmware/config.txt
 
 # Load snd_bcm2835 kernel module at boot time
 if [ "$ENABLE_SOUND" = true ] ; then
@@ -505,99 +525,17 @@ fi
 mkdir -p $R/etc/modprobe.d/
 
 # Blacklist sound modules
-cat <<EOM >$R/etc/modprobe.d/raspi-blacklist.conf
-blacklist snd_soc_core
-blacklist snd_pcm
-blacklist snd_pcm_dmaengine
-blacklist snd_timer
-blacklist snd_compress
-blacklist snd_soc_pcm512x_i2c
-blacklist snd_soc_pcm512x
-blacklist snd_soc_tas5713
-blacklist snd_soc_wm8804
-EOM
+install -o root -g root -m 644 files/modprobe.d/raspi-blacklist.conf $R/etc/modprobe.d/raspi-blacklist.conf
 
 # Create default fstab
-cat <<EOM >$R/etc/fstab
-/dev/mmcblk0p2 / ext4 noatime,nodiratime,errors=remount-ro,discard,data=writeback,commit=100 0 1
-/dev/mmcblk0p1 /boot/firmware vfat defaults,noatime,nodiratime 0 2
-EOM
+install -o root -g root -m 644 files/fstab $R/etc/fstab
 
 # Avoid swapping and increase cache sizes
-cat <<EOM >>$R/etc/sysctl.d/99-sysctl.conf
-
-# Avoid swapping and increase cache sizes
-vm.swappiness=1
-vm.dirty_background_ratio=20
-vm.dirty_ratio=40
-vm.dirty_writeback_centisecs=500
-vm.dirty_expire_centisecs=6000
-EOM
+install -o root -g root -m 644 files/sysctl.d/81-rpi-vm.conf $R/etc/sysctl.d/81-rpi-vm.conf
 
 # Enable network stack hardening
 if [ "$ENABLE_HARDNET" = true ] ; then
-  cat <<EOM >>$R/etc/sysctl.d/99-sysctl.conf
-
-# Enable network stack hardening
-net.ipv4.tcp_timestamps=0
-net.ipv4.tcp_syncookies=1
-net.ipv4.conf.all.rp_filter=1
-net.ipv4.conf.all.accept_redirects=0
-net.ipv4.conf.all.send_redirects=0
-net.ipv4.conf.all.accept_source_route=0
-net.ipv4.conf.default.rp_filter=1
-net.ipv4.conf.default.accept_redirects=0
-net.ipv4.conf.default.send_redirects=0
-net.ipv4.conf.default.accept_source_route=0
-net.ipv4.conf.lo.accept_redirects=0
-net.ipv4.conf.lo.send_redirects=0
-net.ipv4.conf.lo.accept_source_route=0
-net.ipv4.conf.eth0.accept_redirects=0
-net.ipv4.conf.eth0.send_redirects=0
-net.ipv4.conf.eth0.accept_source_route=0
-net.ipv4.icmp_echo_ignore_broadcasts=1
-net.ipv4.icmp_ignore_bogus_error_responses=1
-
-net.ipv6.conf.all.accept_redirects=0
-net.ipv6.conf.all.accept_source_route=0
-net.ipv6.conf.all.router_solicitations=0
-net.ipv6.conf.all.accept_ra_rtr_pref=0
-net.ipv6.conf.all.accept_ra_pinfo=0
-net.ipv6.conf.all.accept_ra_defrtr=0
-net.ipv6.conf.all.autoconf=0
-net.ipv6.conf.all.dad_transmits=0
-net.ipv6.conf.all.max_addresses=1
-
-net.ipv6.conf.default.accept_redirects=0
-net.ipv6.conf.default.accept_source_route=0
-net.ipv6.conf.default.router_solicitations=0
-net.ipv6.conf.default.accept_ra_rtr_pref=0
-net.ipv6.conf.default.accept_ra_pinfo=0
-net.ipv6.conf.default.accept_ra_defrtr=0
-net.ipv6.conf.default.autoconf=0
-net.ipv6.conf.default.dad_transmits=0
-net.ipv6.conf.default.max_addresses=1
-
-net.ipv6.conf.lo.accept_redirects=0
-net.ipv6.conf.lo.accept_source_route=0
-net.ipv6.conf.lo.router_solicitations=0
-net.ipv6.conf.lo.accept_ra_rtr_pref=0
-net.ipv6.conf.lo.accept_ra_pinfo=0
-net.ipv6.conf.lo.accept_ra_defrtr=0
-net.ipv6.conf.lo.autoconf=0
-net.ipv6.conf.lo.dad_transmits=0
-net.ipv6.conf.lo.max_addresses=1
-
-net.ipv6.conf.eth0.accept_redirects=0
-net.ipv6.conf.eth0.accept_source_route=0
-net.ipv6.conf.eth0.router_solicitations=0
-net.ipv6.conf.eth0.accept_ra_rtr_pref=0
-net.ipv6.conf.eth0.accept_ra_pinfo=0
-net.ipv6.conf.eth0.accept_ra_defrtr=0
-net.ipv6.conf.eth0.autoconf=0
-net.ipv6.conf.eth0.dad_transmits=0
-net.ipv6.conf.eth0.max_addresses=1
-EOM
+  install -o root -g root -m 644 files/sysctl.d/81-rpi-net-hardening.conf $R/etc/sysctl.d/81-rpi-net-hardening.conf
 
 # Enable resolver warnings about spoofed addresses
   cat <<EOM >>$R/etc/host.conf
@@ -605,15 +543,36 @@ spoof warn
 EOM
 fi
 
-# Regenerate openssh server host keys
+# First boot actions
+cat files/firstboot/10-begin.sh > $R/etc/rc.firstboot
+
+# Ensure openssh server host keys are regenerated on first boot
 if [ "$ENABLE_SSHD" = true ] ; then
-  rm -fr $R/etc/ssh/ssh_host_*
-  LANG=C chroot $R dpkg-reconfigure openssh-server
+  cat files/firstboot/21-generate-ssh-keys.sh >> $R/etc/rc.firstboot
+  rm -f $R/etc/ssh/ssh_host_*
+fi
+
+if [ "$EXPANDROOT" = true ] ; then
+  cat files/firstboot/22-expandroot.sh >> $R/etc/rc.firstboot
+fi
+
+cat files/firstboot/99-finish.sh >> $R/etc/rc.firstboot
+chmod +x $R/etc/rc.firstboot
+
+sed -i '/exit 0/d' $R/etc/rc.local
+echo /etc/rc.firstboot >> $R/etc/rc.local
+echo exit 0 >> $R/etc/rc.local
+
+# Disable rsyslog
+if [ "$ENABLE_RSYSLOG" = false ]; then
+  sed -i 's|[#]*ForwardToSyslog=yes|ForwardToSyslog=no|g' $R/etc/systemd/journald.conf
+  chroot_exec systemctl disable rsyslog
+  chroot_exec apt-get purge -q -y --force-yes rsyslog
 fi
 
 # Enable serial console systemd style
 if [ "$ENABLE_CONSOLE" = true ] ; then
-  LANG=C chroot $R systemctl enable serial-getty\@ttyAMA0.service
+  chroot_exec systemctl enable serial-getty\@ttyAMA0.service
 fi
 
 # Enable firewall based on iptables started by systemd service
@@ -622,177 +581,30 @@ if [ "$ENABLE_IPTABLES" = true ] ; then
   mkdir -p "$R/etc/iptables"
 
   # Create iptables systemd service
-  cat <<EOM >$R/etc/systemd/system/iptables.service
-[Unit]
-Description=Packet Filtering Framework
-DefaultDependencies=no
-After=systemd-sysctl.service
-Before=sysinit.target
-[Service]
-Type=oneshot
-ExecStart=/sbin/iptables-restore /etc/iptables/iptables.rules
-ExecReload=/sbin/iptables-restore /etc/iptables/iptables.rules
-ExecStop=/etc/iptables/flush-iptables.sh
-RemainAfterExit=yes
-[Install]
-WantedBy=multi-user.target
-EOM
+  install -o root -g root -m 644 files/iptables/iptables.service $R/etc/systemd/system/iptables.service
 
   # Create flush-table script called by iptables service
-  cat <<EOM >$R/etc/iptables/flush-iptables.sh
-#!/bin/sh
-iptables -F
-iptables -X
-iptables -t nat -F
-iptables -t nat -X
-iptables -t mangle -F
-iptables -t mangle -X
-iptables -P INPUT ACCEPT
-iptables -P FORWARD ACCEPT
-iptables -P OUTPUT ACCEPT
-EOM
+  install -o root -g root -m 755 files/iptables/flush-iptables.sh $R/etc/iptables/flush-iptables.sh
 
   # Create iptables rule file
-  cat <<EOM >$R/etc/iptables/iptables.rules
-*filter
-:INPUT DROP [0:0]
-:FORWARD DROP [0:0]
-:OUTPUT ACCEPT [0:0]
-:TCP - [0:0]
-:UDP - [0:0]
-:SSH - [0:0]
-
-# Rate limit ping requests
--A INPUT -p icmp --icmp-type echo-request -m limit --limit 30/min --limit-burst 8 -j ACCEPT
--A INPUT -p icmp --icmp-type echo-request -j DROP
-
-# Accept established connections
--A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-
-# Accept all traffic on loopback interface
--A INPUT -i lo -j ACCEPT
-
-# Drop packets declared invalid
--A INPUT -m conntrack --ctstate INVALID -j DROP
-
-# SSH rate limiting
--A INPUT -p tcp --dport ssh -m conntrack --ctstate NEW -j SSH
--A SSH -m recent --name sshbf --rttl --rcheck --hitcount 3 --seconds 10 -j DROP
--A SSH -m recent --name sshbf --rttl --rcheck --hitcount 20 --seconds 1800 -j DROP
--A SSH -m recent --name sshbf --set -j ACCEPT
-
-# Send TCP and UDP connections to their respective rules chain
--A INPUT -p udp -m conntrack --ctstate NEW -j UDP
--A INPUT -p tcp --syn -m conntrack --ctstate NEW -j TCP
-
-# Reject dropped packets with a RFC compliant responce
--A INPUT -p udp -j REJECT --reject-with icmp-port-unreachable
--A INPUT -p tcp -j REJECT --reject-with tcp-rst
--A INPUT -j REJECT --reject-with icmp-proto-unreachable
-
-## TCP PORT RULES
-# -A TCP -p tcp -j LOG
-
-## UDP PORT RULES
-# -A UDP -p udp -j LOG
-
-COMMIT
-EOM
+  install -o root -g root -m 644 files/iptables/iptables.rules $R/etc/iptables/iptables.rules
 
   # Reload systemd configuration and enable iptables service
-  LANG=C chroot $R systemctl daemon-reload
-  LANG=C chroot $R systemctl enable iptables.service
+  chroot_exec systemctl daemon-reload
+  chroot_exec systemctl enable iptables.service
 
   if [ "$ENABLE_IPV6" = true ] ; then
     # Create ip6tables systemd service
-    cat <<EOM >$R/etc/systemd/system/ip6tables.service
-[Unit]
-Description=Packet Filtering Framework
-DefaultDependencies=no
-After=systemd-sysctl.service
-Before=sysinit.target
-[Service]
-Type=oneshot
-ExecStart=/sbin/ip6tables-restore /etc/iptables/ip6tables.rules
-ExecReload=/sbin/ip6tables-restore /etc/iptables/ip6tables.rules
-ExecStop=/etc/iptables/flush-ip6tables.sh
-RemainAfterExit=yes
-[Install]
-WantedBy=multi-user.target
-EOM
+    install -o root -g root -m 644 files/iptables/ip6tables.service $R/etc/systemd/system/ip6tables.service
 
     # Create ip6tables file
-    cat <<EOM >$R/etc/iptables/flush-ip6tables.sh
-#!/bin/sh
-ip6tables -F
-ip6tables -X
-ip6tables -Z
-for table in $(</proc/net/ip6_tables_names)
-do
-        ip6tables -t \$table -F
-        ip6tables -t \$table -X
-        ip6tables -t \$table -Z
-done
-ip6tables -P INPUT ACCEPT
-ip6tables -P OUTPUT ACCEPT
-ip6tables -P FORWARD ACCEPT
-EOM
+    install -o root -g root -m 755 files/iptables/flush-ip6tables.sh $R/etc/iptables/flush-ip6tables.sh
 
-    # Create ip6tables rule file
-    cat <<EOM >$R/etc/iptables/ip6tables.rules
-*filter
-:INPUT DROP [0:0]
-:FORWARD DROP [0:0]
-:OUTPUT ACCEPT [0:0]
-:TCP - [0:0]
-:UDP - [0:0]
-:SSH - [0:0]
+    install -o root -g root -m 644 files/iptables/ip6tables.rules $R/etc/iptables/ip6tables.rules
 
-# Drop packets with RH0 headers
--A INPUT -m rt --rt-type 0 -j DROP
--A OUTPUT -m rt --rt-type 0 -j DROP
--A FORWARD -m rt --rt-type 0 -j DROP
-
-# Rate limit ping requests
--A INPUT -p icmpv6 --icmpv6-type echo-request -m limit --limit 30/min --limit-burst 8 -j ACCEPT
--A INPUT -p icmpv6 --icmpv6-type echo-request -j DROP
-
-# Accept established connections
--A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-
-# Accept all traffic on loopback interface
--A INPUT -i lo -j ACCEPT
-
-# Drop packets declared invalid
--A INPUT -m conntrack --ctstate INVALID -j DROP
-
-# SSH rate limiting
--A INPUT -p tcp --dport ssh -m conntrack --ctstate NEW -j SSH
--A SSH -m recent --name sshbf --rttl --rcheck --hitcount 3 --seconds 10 -j DROP
--A SSH -m recent --name sshbf --rttl --rcheck --hitcount 20 --seconds 1800 -j DROP
--A SSH -m recent --name sshbf --set -j ACCEPT
-
-# Send TCP and UDP connections to their respective rules chain
--A INPUT -p udp -m conntrack --ctstate NEW -j UDP
--A INPUT -p tcp --syn -m conntrack --ctstate NEW -j TCP
-
-# Reject dropped packets with a RFC compliant responce
--A INPUT -p udp -j REJECT --reject-with icmp6-adm-prohibited
--A INPUT -p tcp -j REJECT --reject-with icmp6-adm-prohibited
--A INPUT -j REJECT --reject-with icmp6-adm-prohibited
-
-## TCP PORT RULES
-# -A TCP -p tcp -j LOG
-
-## UDP PORT RULES
-# -A UDP -p udp -j LOG
-
-COMMIT
-EOM
-
-  # Reload systemd configuration and enable iptables service
-  LANG=C chroot $R systemctl daemon-reload
-  LANG=C chroot $R systemctl enable ip6tables.service
+    # Reload systemd configuration and enable iptables service
+    chroot_exec systemctl daemon-reload
+    chroot_exec systemctl enable ip6tables.service
   fi
 fi
 
@@ -804,7 +616,7 @@ fi
 
 # Install gcc/c++ build environment inside the chroot
 if [ "$ENABLE_UBOOT" = true ] || [ "$ENABLE_FBTURBO" = true ]; then
-  LANG=C chroot $R apt-get install -q -y --force-yes --no-install-recommends linux-compiler-gcc-4.9-arm g++ make bc
+  chroot_exec apt-get install -q -y --force-yes --no-install-recommends linux-compiler-gcc-4.9-arm g++ make bc
 fi
 
 ### To-do: change U-Boot to raspbian maintained
@@ -814,7 +626,7 @@ if [ "$ENABLE_UBOOT" = true ] ; then
   git -C $R/tmp clone git://git.denx.de/u-boot.git
 
   # Build and install U-Boot inside chroot
-  LANG=C chroot $R make -C /tmp/u-boot/ rpi_2_defconfig all
+  chroot_exec make -C /tmp/u-boot/ rpi_2_defconfig all
 
   # Copy compiled bootloader binary and set config.txt to load it
   cp $R/tmp/u-boot/u-boot.bin $R/boot/firmware/
@@ -839,7 +651,7 @@ bootz \${kernel_addr_r}
 EOM
 
   # Generate U-Boot image from command file
-  LANG=C chroot $R mkimage -A arm -O linux -T script -C none -a 0x00000000 -e 0x00000000 -n "RPi2 Boot Script" -d /boot/firmware/uboot.mkimage /boot/firmware/boot.scr
+  chroot_exec mkimage -A arm -O linux -T script -C none -a 0x00000000 -e 0x00000000 -n "RPi2 Boot Script" -d /boot/firmware/uboot.mkimage /boot/firmware/boot.scr
 fi
 
 ### To-do: remove and check if it is possible to use raspbian maintained stuff
@@ -849,10 +661,10 @@ if [ "$ENABLE_FBTURBO" = true ] ; then
   git -C $R/tmp clone https://github.com/ssvb/xf86-video-fbturbo.git
 
   # Install Xorg build dependencies
-  LANG=C chroot $R apt-get install -q -y --no-install-recommends xorg-dev xutils-dev x11proto-dri2-dev libltdl-dev libtool automake libdrm-dev
+  chroot_exec apt-get install -q -y --no-install-recommends xorg-dev xutils-dev x11proto-dri2-dev libltdl-dev libtool automake libdrm-dev
 
   # Build and install fbturbo driver inside chroot
-  LANG=C chroot $R /bin/bash -c "cd /tmp/xf86-video-fbturbo; autoreconf -vi; ./configure --prefix=/usr; make; make install"
+  chroot_exec /bin/bash -c "cd /tmp/xf86-video-fbturbo; autoreconf -vi; ./configure --prefix=/usr; make; make install"
 
   # Add fbturbo driver to Xorg configuration
   cat <<EOM >$R/usr/share/X11/xorg.conf.d/99-fbturbo.conf
@@ -865,18 +677,25 @@ EndSection
 EOM
 
   # Remove Xorg build dependencies
-  LANG=C chroot $R apt-get -q -y purge --auto-remove xorg-dev xutils-dev x11proto-dri2-dev libltdl-dev libtool automake libdrm-dev
+  chroot_exec apt-get -q -y purge --auto-remove xorg-dev xutils-dev x11proto-dri2-dev libltdl-dev libtool automake libdrm-dev
 fi
 
 # Remove gcc/c++ build environment from the chroot
 if [ "$ENABLE_UBOOT" = true ] || [ "$ENABLE_FBTURBO" = true ]; then
-  LANG=C chroot $R apt-get -y -q purge --auto-remove bc binutils cpp cpp-4.9 g++ g++-4.9 gcc gcc-4.9 libasan1 libatomic1 libc-dev-bin libc6-dev libcloog-isl4 libgcc-4.9-dev libgomp1 libisl10 libmpc3 libmpfr4 libstdc++-4.9-dev libubsan0 linux-compiler-gcc-4.9-arm linux-libc-dev make
+  chroot_exec apt-get -y -q purge --auto-remove bc binutils cpp cpp-4.9 g++ g++-4.9 gcc gcc-4.9 libasan1 libatomic1 libc-dev-bin libc6-dev libcloog-isl4 libgcc-4.9-dev libgomp1 libisl10 libmpc3 libmpfr4 libstdc++-4.9-dev libubsan0 linux-compiler-gcc-4.9-arm linux-libc-dev make
 fi
 
 # Clean cached downloads
-LANG=C chroot $R apt-get -y clean
-LANG=C chroot $R apt-get -y autoclean
-LANG=C chroot $R apt-get -y autoremove
+chroot_exec apt-get -y clean
+chroot_exec apt-get -y autoclean
+chroot_exec apt-get -y autoremove
+
+# Invoke custom scripts
+if [ -n "${CHROOT_SCRIPTS}" ]; then
+  cp -r "${CHROOT_SCRIPTS}" "${R}/chroot_scripts"
+  LANG=C chroot $R bash -c 'for SCRIPT in /chroot_scripts/*; do if [ -f $SCRIPT -a -x $SCRIPT ]; then $SCRIPT; fi done;'
+  rm -rf "${R}/chroot_scripts"
+fi
 
 # Unmount mounted filesystems
 umount -l $R/proc
@@ -895,35 +714,42 @@ rm -f $R/var/lib/urandom/random-seed
 rm -f $R/etc/machine-id
 rm -fr $R/etc/apt/apt.conf.d/10proxy
 
-# Calculate size of the chroot directory
-CHROOT_SIZE=$(expr `du -s $R | awk '{ print $1 }'` / 1024)
+# Calculate size of the chroot directory in KB
+CHROOT_SIZE=$(expr `du -s $R | awk '{ print $1 }'`)
 
-# Calculate required image size
-IMAGE_SIZE=`expr $(expr ${CHROOT_SIZE} / 1024 + 1) \* 1024`
+# Calculate the amount of needed 512 Byte sectors
+TABLE_SECTORS=$(expr 1 \* 1024 \* 1024 \/ 512)
+BOOT_SECTORS=$(expr 64 \* 1024 \* 1024 \/ 512)
+ROOT_OFFSET=$(expr ${TABLE_SECTORS} + ${BOOT_SECTORS})
 
-# Calculate number of sectors for the partition
-IMAGE_SECTORS=`expr $(expr ${IMAGE_SIZE} \* 1048576) / 512 - 133120`
+# The root partition is EXT4
+# This means more space than the actual used space of the chroot is used.
+# As overhead for journaling and reserved blocks 20% are added.
+ROOT_SECTORS=$(expr $(expr ${CHROOT_SIZE} + ${CHROOT_SIZE} \/ 100 \* 20) \* 1024 \/ 512)
+
+# Calculate required image size in 512 Byte sectors
+IMAGE_SECTORS=$(expr ${TABLE_SECTORS} + ${BOOT_SECTORS} + ${ROOT_SECTORS})
 
 # Prepare date string for image file name
 DATE="$(date +%Y-%m-%d)"
 
 # Prepare image file
-dd if=/dev/zero of="$BASEDIR/${DATE}-debian-${RELEASE}.img" bs=1M count=1
-dd if=/dev/zero of="$BASEDIR/${DATE}-debian-${RELEASE}.img" bs=1M count=0 seek=${IMAGE_SIZE}
+dd if=/dev/zero of="$BASEDIR/${DATE}-debian-${RELEASE}.img" bs=512 count=${TABLE_SECTORS}
+dd if=/dev/zero of="$BASEDIR/${DATE}-debian-${RELEASE}.img" bs=512 count=0 seek=${IMAGE_SECTORS}
 
 # Write partition table
-sfdisk -q -L -f "$BASEDIR/${DATE}-debian-${RELEASE}.img" <<EOM
+sfdisk -q -f "$BASEDIR/${DATE}-debian-${RELEASE}.img" <<EOM
 unit: sectors
 
-1 : start=     2048, size=   131072, Id= c, bootable
-2 : start=   133120, size=  ${IMAGE_SECTORS}, Id=83
-3 : start=        0, size=        0, Id= 0
-4 : start=        0, size=        0, Id= 0
+1 : start=   ${TABLE_SECTORS}, size=   ${BOOT_SECTORS}, Id= c, bootable
+2 : start=     ${ROOT_OFFSET}, size=   ${ROOT_SECTORS}, Id=83
+3 : start=                  0, size=                 0, Id= 0
+4 : start=                  0, size=                 0, Id= 0
 EOM
 
 # Set up temporary loop devices and build filesystems
 VFAT_LOOP="$(losetup -o 1M --sizelimit 64M -f --show $BASEDIR/${DATE}-debian-${RELEASE}.img)"
-EXT4_LOOP="$(losetup -o 65M --sizelimit `expr ${IMAGE_SIZE} - 64`M -f --show $BASEDIR/${DATE}-debian-${RELEASE}.img)"
+EXT4_LOOP="$(losetup -o 65M -f --show $BASEDIR/${DATE}-debian-${RELEASE}.img)"
 mkfs.vfat "$VFAT_LOOP"
 mkfs.ext4 "$EXT4_LOOP"
 
